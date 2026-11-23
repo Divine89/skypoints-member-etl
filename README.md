@@ -98,12 +98,29 @@ The DDL is in [`resource/ddl_scripts.sql`](resource/ddl_scripts.sql).
 * `curated_data.table_india`, `table_australia`, `table_usa`,
   `table_philippines`, and `table_canada`: country outputs with the six columns
   shown in the Australian workbook; `member_name` is the primary key within
-  each country table. Other valid two-to-five-character country codes create a
-  safely quoted `table_<code>` table automatically.
+  each country table.
 * `curated_data.seed_rejects`: rows from curated-example seed files that failed
   validation, including the source file, row number, payload, and reason.
 * `raw_data.etl_batch`: batch ID, source names, load time, the `as_of_date` used
   for derived columns, and committed row counts.
+
+### Adding another country
+
+For the daily member feed, no manual DDL is needed for a new country. The ETL
+accepts a 2–5 character alphanumeric country code, uppercases it, and creates a
+safely quoted `curated_data.table_<code>` table automatically. For example,
+`CHN` creates `curated_data.table_chn` and `MYS` creates
+`curated_data.table_mys`. Those tables use the same schema and
+`Member_Name`/latest-flight upsert behavior as the existing country tables, and
+the CSV export includes them automatically.
+
+Use one canonical code consistently: country aliases are explicitly mapped only
+for the existing supported codes, so `CN` and `CHN` would create separate
+tables. The country seed loader currently accepts only India, USA, and
+Australia; loading historical files for another country requires adding its
+code and CLI argument to that loader. The example redemption join below and the
+country-target section in `resource/assessment_showcase.sql` also list the
+current static tables; add a `UNION ALL` branch there to include a new country.
 
 Example redemption-to-country-target join:
 
