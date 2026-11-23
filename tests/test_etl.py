@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import psycopg2
+from openpyxl import Workbook
 
 from pipeline.etl import (
     DEFAULT_MEMBER_FILE,
@@ -17,6 +18,7 @@ from pipeline.etl import (
     iter_redemption_records,
     stale_member_flag,
 )
+from pipeline.seed_country_data import parse_seed_file
 
 
 class MemberFeedTests(unittest.TestCase):
@@ -81,6 +83,59 @@ class DatabaseConnectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "existing database volume") as caught:
                     connect_from_environment()
         self.assertNotIn(environment["PG_PASSWORD"], str(caught.exception))
+
+
+class CountrySeedTests(unittest.TestCase):
+    def test_csv_accepts_slash_and_unpadded_date_formats(self):
+        india = (
+            "ID,Name,DOB,TierCode,EnrollmentDate,Individual or Corporate,Flight Date\n"
+            "1,Vikas,12/1/1998,SLV,1/1/2022,I,6/15/2022\n"
+        )
+        usa = (
+            "ID,Name,TierCode,EnrollmentDate,FlightDate\n"
+            "2,John,SLV,1052022,1152022\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            india_path = Path(directory) / "india.csv"
+            usa_path = Path(directory) / "usa.csv"
+            india_path.write_text(india, encoding="utf-8")
+            usa_path.write_text(usa, encoding="utf-8")
+
+            india_rows, india_rejects = parse_seed_file(india_path, "IND")
+            usa_rows, usa_rejects = parse_seed_file(usa_path, "USA")
+
+        self.assertEqual(india_rows[0].date_of_flight, date(2022, 6, 15))
+        self.assertEqual(usa_rows[0].date_of_enrollment, date(2022, 1, 5))
+        self.assertEqual(usa_rows[0].date_of_flight, date(2022, 1, 15))
+        self.assertFalse(india_rejects)
+        self.assertFalse(usa_rejects)
+
+    def test_xlsx_quarantines_invalid_enrollment_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "australia.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(
+                [
+                    "Unique ID",
+                    "Member Name",
+                    "Tier Type",
+                    "DOB",
+                    "Date of Enrollment",
+                    "Date of Flight",
+                ]
+            )
+            sheet.append([1, "Mike", "PLT", "NULL", date(2022, 5, 11), date(2022, 8, 1)])
+            sheet.append([2, "Jonnathan", "GLD", date(1997, 12, 13), "2021-13-13", date(2022, 1, 5)])
+            workbook.save(path)
+
+            accepted, rejected = parse_seed_file(path, "AUS")
+
+        self.assertEqual(len(accepted), 1)
+        self.assertIsNone(accepted[0].date_of_birth)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0].member_name, "Jonnathan")
+        self.assertIn("invalid date", rejected[0].reason)
 
 
 class RedemptionFeedTests(unittest.TestCase):

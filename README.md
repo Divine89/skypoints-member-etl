@@ -37,8 +37,8 @@ available as typed columns; the original transaction object is retained in raw.
    ```powershell
    $env:PG_HOST = "localhost"
    $env:PG_PORT = "5432"
-   $env:PG_DATABASE = "skypoints"
-   $env:PG_USER = "skypoints"
+   $env:PG_DATABASE = "postgres"
+   $env:PG_USER = "postgres"
    $env:PG_PASSWORD = "change-me"
    ```
 
@@ -64,6 +64,24 @@ To run the local assessment files instead of the safe demo data:
 python -m pipeline.etl --member-file resource\source_data\pipe-delimited.txt --redemption-file resource\source_data\redumption_feed.json --as-of 2024-01-15
 ```
 
+## Seed the shared country examples
+
+The supplied country CSV/XLSX files are already shaped like curated outputs, so
+load them directly into the country tables before running the daily ETL. Their
+source files are not copied into Git. Point the loader at the local files:
+
+```powershell
+python -m pipeline.seed_country_data --india-csv ".\IND(in).csv" --usa-csv ".\USA(in).csv" --australia-xlsx ".\AUS.xlsx"
+```
+
+Place `IND(in).csv`, `USA(in).csv`, and `AUS.xlsx` in the project root first.
+These source files are ignored by Git and will not be published. The loader
+accepts the date formats used in those files, applies the DDL, and
+upserts by member name within each country table. A row is updated only when its
+flight date is later than the stored flight date. The invalid Australian
+enrollment date is written to `curated_data.seed_rejects`; valid rows in that
+file still load. `NULL`/blank optional dates stay `NULL`.
+
 ## Tables
 
 The DDL is in [`resource/ddl_scripts.sql`](resource/ddl_scripts.sql).
@@ -77,8 +95,11 @@ The DDL is in [`resource/ddl_scripts.sql`](resource/ddl_scripts.sql).
 * `curated_data.member_current`: current canonical record keyed by member ID.
 * `curated_data.table_india`, `table_australia`, `table_usa`,
   `table_philippines`, and `table_canada`: country outputs with the six columns
-  shown in the Australian workbook. Other valid two-to-five-character country
-  codes create a safely quoted `table_<code>` table automatically.
+  shown in the Australian workbook; `member_name` is the primary key within
+  each country table. Other valid two-to-five-character country codes create a
+  safely quoted `table_<code>` table automatically.
+* `curated_data.seed_rejects`: rows from curated-example seed files that failed
+  validation, including the source file, row number, payload, and reason.
 * `raw_data.etl_batch`: batch ID, source names, load time, and committed row counts.
 
 Example redemption-to-profile join:
@@ -103,13 +124,16 @@ JOIN curated_data.member_current AS m USING (member_id);
 * `Age` is the number of completed birthdays as of `--as-of`. `Stale_Member` is
   `Y` only when a known flight date is more than 90 days old, `N` otherwise;
   it is `NULL` when flight date is missing.
-* Member ID is the stable identity for country movement and redemption joins.
-  The PDF labels member name as a key, so duplicate names within a batch are
-  rejected as well. Member IDs are also unique within a batch to safely track
-  moves and join redemptions. Latest arrival wins because the source feeds do not
-  provide a profile update timestamp. The file line number is retained for audit
-  and tie-breaking; duplicate keys within a batch fail validation rather than
-  being silently selected.
+* The PDF identifies `Member_Name` as the profile key. Curated country tables
+  therefore upsert by name within each country, and replace a row only when the
+  incoming `Last_Flight_Date` is later; missing, equal, or older dates do not
+  overwrite a dated row. Same-name records in different country tables remain
+  separate. The internal `member_current` table is keyed by source member ID for
+  redemption joins and to detect a country move; it accepts a profile update
+  only when its flight date advances.
+* Duplicate member IDs and key names within a daily batch are rejected. The
+  file line number is retained for audit. The seed CSV/XLSX loader quarantines
+  invalid records instead of dropping them silently.
 * The PDF's column spec includes optional `Post_Code`, while its sample header
   and supplied file omit it. Both layouts are supported. IDs are checked against
   the documented maximum rather than forced to 18 characters because the sample
@@ -135,9 +159,25 @@ country-routing semantics; don't move billions of rows through Python.
 python -m unittest discover -s tests -v
 ```
 
-The unit tests cover both supplied formats, optional postcode handling, date
-validation, age/staleness boundaries, and JSON flattening without requiring a
-running PostgreSQL server.
+The unit tests cover the daily feeds, curated seed formats, invalid seed-row
+quarantine, date validation, age/staleness boundaries, and JSON flattening
+without requiring a running PostgreSQL server.
+
+## Assessment SQL showcase
+
+After applying the DDL, loading the country examples, and running the ETL,
+execute [`resource/assessment_showcase.sql`](resource/assessment_showcase.sql)
+in pgAdmin, or run:
+
+```powershell
+psql -h localhost -U skypoints -d skypoints -f resource\assessment_showcase.sql
+```
+
+It has read-only evidence and validation queries for deliverables 1–5, a
+synthetic country-move/latest-flight example, and a short live-demo checklist
+for deliverable 6. The Age/Stale_Member audit uses `2024-01-15`; change that
+date in the SQL if the ETL batch used a different `--as-of` value. Zero
+mismatches and `PASS` results are the expected outcomes.
 
 ## License
 

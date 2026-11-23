@@ -389,8 +389,8 @@ def _create_country_table(cursor: Any, table_name: str) -> None:
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS curated_data.{} (
-                unique_id VARCHAR(18) PRIMARY KEY,
-                member_name VARCHAR(255) NOT NULL,
+                unique_id VARCHAR(18) NOT NULL,
+                member_name VARCHAR(255) PRIMARY KEY,
                 tier_type VARCHAR(5),
                 date_of_birth DATE,
                 date_of_enrollment DATE NOT NULL,
@@ -423,11 +423,11 @@ def _curate_batch(cursor: Any, batch_id: uuid.UUID) -> None:
             source_batch_id = EXCLUDED.source_batch_id,
             source_record_number = EXCLUDED.source_record_number,
             load_timestamp = EXCLUDED.load_timestamp
-        WHERE (EXCLUDED.load_timestamp, EXCLUDED.source_batch_id,
-               EXCLUDED.source_record_number)
-            > (current_member.load_timestamp,
-               current_member.source_batch_id,
-               current_member.source_record_number)
+        WHERE EXCLUDED.last_flight_date IS NOT NULL
+          AND (
+              current_member.last_flight_date IS NULL
+              OR EXCLUDED.last_flight_date > current_member.last_flight_date
+          )
         """,
         (str(batch_id),),
     )
@@ -454,6 +454,7 @@ def _curate_batch(cursor: Any, batch_id: uuid.UUID) -> None:
                   AND (
                       current.country IS NULL
                       OR NOT (current.country = ANY(%s))
+                      OR target.member_name <> current.member_name
                   )
                 """
             ).format(sql.Identifier(table_name)),
@@ -473,12 +474,18 @@ def _curate_batch(cursor: Any, batch_id: uuid.UUID) -> None:
                        enrollment_date, last_flight_date
                 FROM curated_data.member_current
                 WHERE source_batch_id = %s AND country = %s
-                ON CONFLICT (unique_id) DO UPDATE SET
+                ON CONFLICT (member_name) DO UPDATE SET
+                    unique_id = EXCLUDED.unique_id,
                     member_name = EXCLUDED.member_name,
                     tier_type = EXCLUDED.tier_type,
                     date_of_birth = EXCLUDED.date_of_birth,
                     date_of_enrollment = EXCLUDED.date_of_enrollment,
                     date_of_flight = EXCLUDED.date_of_flight
+                WHERE EXCLUDED.date_of_flight IS NOT NULL
+                  AND (
+                      target.date_of_flight IS NULL
+                      OR EXCLUDED.date_of_flight > target.date_of_flight
+                  )
                 """
             ).format(sql.Identifier(table_name)),
             (str(batch_id), country),

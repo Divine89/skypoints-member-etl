@@ -92,8 +92,8 @@ CREATE INDEX IF NOT EXISTS ix_member_current_country
     ON curated_data.member_current (country, member_id);
 
 CREATE TABLE IF NOT EXISTS curated_data.table_india (
-    unique_id            VARCHAR(18) PRIMARY KEY,
-    member_name          VARCHAR(255) NOT NULL,
+    unique_id            VARCHAR(18) NOT NULL,
+    member_name          VARCHAR(255) PRIMARY KEY,
     tier_type            VARCHAR(5),
     date_of_birth        DATE,
     date_of_enrollment   DATE NOT NULL,
@@ -101,8 +101,8 @@ CREATE TABLE IF NOT EXISTS curated_data.table_india (
 );
 
 CREATE TABLE IF NOT EXISTS curated_data.table_australia (
-    unique_id            VARCHAR(18) PRIMARY KEY,
-    member_name          VARCHAR(255) NOT NULL,
+    unique_id            VARCHAR(18) NOT NULL,
+    member_name          VARCHAR(255) PRIMARY KEY,
     tier_type            VARCHAR(5),
     date_of_birth        DATE,
     date_of_enrollment   DATE NOT NULL,
@@ -110,8 +110,8 @@ CREATE TABLE IF NOT EXISTS curated_data.table_australia (
 );
 
 CREATE TABLE IF NOT EXISTS curated_data.table_usa (
-    unique_id            VARCHAR(18) PRIMARY KEY,
-    member_name          VARCHAR(255) NOT NULL,
+    unique_id            VARCHAR(18) NOT NULL,
+    member_name          VARCHAR(255) PRIMARY KEY,
     tier_type            VARCHAR(5),
     date_of_birth        DATE,
     date_of_enrollment   DATE NOT NULL,
@@ -119,8 +119,8 @@ CREATE TABLE IF NOT EXISTS curated_data.table_usa (
 );
 
 CREATE TABLE IF NOT EXISTS curated_data.table_philippines (
-    unique_id            VARCHAR(18) PRIMARY KEY,
-    member_name          VARCHAR(255) NOT NULL,
+    unique_id            VARCHAR(18) NOT NULL,
+    member_name          VARCHAR(255) PRIMARY KEY,
     tier_type            VARCHAR(5),
     date_of_birth        DATE,
     date_of_enrollment   DATE NOT NULL,
@@ -128,10 +128,72 @@ CREATE TABLE IF NOT EXISTS curated_data.table_philippines (
 );
 
 CREATE TABLE IF NOT EXISTS curated_data.table_canada (
-    unique_id            VARCHAR(18) PRIMARY KEY,
-    member_name          VARCHAR(255) NOT NULL,
+    unique_id            VARCHAR(18) NOT NULL,
+    member_name          VARCHAR(255) PRIMARY KEY,
     tier_type            VARCHAR(5),
     date_of_birth        DATE,
     date_of_enrollment   DATE NOT NULL,
     date_of_flight       DATE
 );
+
+CREATE TABLE IF NOT EXISTS curated_data.seed_rejects (
+    seed_batch_id        UUID NOT NULL,
+    country_code         VARCHAR(5) NOT NULL,
+    source_file_name     TEXT NOT NULL,
+    source_record_number BIGINT NOT NULL,
+    member_name          VARCHAR(255),
+    rejection_reason     TEXT NOT NULL,
+    payload              JSONB NOT NULL,
+    load_timestamp       TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (seed_batch_id, source_file_name, source_record_number)
+);
+
+DO $$
+DECLARE
+    target_name TEXT;
+    primary_key_name TEXT;
+BEGIN
+    FOREACH target_name IN ARRAY ARRAY[
+        'table_india', 'table_australia', 'table_usa',
+        'table_philippines', 'table_canada'
+    ] LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conrelid = format('curated_data.%I', target_name)::regclass
+              AND contype = 'p'
+              AND pg_get_constraintdef(oid) = 'PRIMARY KEY (member_name)'
+        ) THEN
+            EXECUTE format(
+                'DELETE FROM curated_data.%1$I AS target
+                 USING (
+                     SELECT ctid,
+                            row_number() OVER (
+                                PARTITION BY member_name
+                                ORDER BY date_of_flight DESC NULLS LAST, unique_id DESC
+                            ) AS duplicate_number
+                     FROM curated_data.%1$I
+                 ) AS ranked
+                 WHERE target.ctid = ranked.ctid AND ranked.duplicate_number > 1',
+                target_name
+            );
+
+            FOR primary_key_name IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = format('curated_data.%I', target_name)::regclass
+                  AND contype = 'p'
+            LOOP
+                EXECUTE format(
+                    'ALTER TABLE curated_data.%I DROP CONSTRAINT %I',
+                    target_name, primary_key_name
+                );
+            END LOOP;
+
+            EXECUTE format(
+                'ALTER TABLE curated_data.%I ADD CONSTRAINT %I PRIMARY KEY (member_name)',
+                target_name, target_name || '_pkey'
+            );
+        END IF;
+    END LOOP;
+END $$;
