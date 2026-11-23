@@ -1,0 +1,3 @@
+|H|Member_Name|Member_Id|Enrollment_Date|Last_Flight_Date|Tier_Code|Agent_Name|State|Country|DOB|Is_Active
+|D|Demo Member One|DEMO001|20220101|20231001|GLD|Demo Agent|DL|IND|01011990|A
+|D|Demo Member Two|DEMO002|20220315||SLV|Demo Agent|CA|USA||A

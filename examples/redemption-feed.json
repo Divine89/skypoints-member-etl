@@ -1,0 +1,20 @@
+{
+  "member_id": "DEMO001",
+  "feed_date": "20240115",
+  "redemptions": [
+    {
+      "txn_id": "DEMO-TXN-1",
+      "txn_date": "20240110",
+      "partner": "Demo Airline",
+      "miles_redeemed": 1200,
+      "status": "COMPLETED"
+    },
+    {
+      "txn_id": "DEMO-TXN-2",
+      "txn_date": "20240113",
+      "partner": "Demo Airline",
+      "miles_redeemed": 500,
+      "status": "PENDING"
+    }
+  ]
+}

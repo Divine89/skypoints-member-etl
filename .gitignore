@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+resource/source_data/*
+resource/master_data_county_wise/*.csv
