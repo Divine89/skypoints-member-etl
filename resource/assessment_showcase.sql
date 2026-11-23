@@ -4,8 +4,8 @@
 -- Every statement in this file is read-only. Empty discrepancy results and
 -- PASS statuses indicate that the corresponding loaded data check succeeded.
 --
--- Q2 uses the README demo's --as-of date. Change it to the same date passed
--- to pipeline.etl if the batch was loaded with a different --as-of value.
+-- Q2 uses the as-of date persisted with each ETL batch. Older batches created
+-- before that column existed fall back to their load date.
 
 -- ============================================================================
 -- Q1. Raw, staging, and country-target DDL
@@ -60,7 +60,9 @@ ORDER BY tc.table_name;
 -- ============================================================================
 -- Compare stored values to the assessment rules for the latest ETL batch.
 WITH latest_batch AS (
-    SELECT batch_id
+    SELECT
+        batch_id,
+        coalesce(as_of_date, load_timestamp::date) AS as_of_date
     FROM raw_data.etl_batch
     ORDER BY load_timestamp DESC, batch_id DESC
     LIMIT 1
@@ -74,12 +76,12 @@ calculated AS (
         CASE
             WHEN staging.date_of_birth IS NULL THEN NULL
             ELSE
-                EXTRACT(YEAR FROM DATE '2024-01-15')::INTEGER
+                EXTRACT(YEAR FROM batch.as_of_date)::INTEGER
                 - EXTRACT(YEAR FROM staging.date_of_birth)::INTEGER
                 - CASE
                     WHEN (
-                        EXTRACT(MONTH FROM DATE '2024-01-15')::INTEGER,
-                        EXTRACT(DAY FROM DATE '2024-01-15')::INTEGER
+                        EXTRACT(MONTH FROM batch.as_of_date)::INTEGER,
+                        EXTRACT(DAY FROM batch.as_of_date)::INTEGER
                     ) < (
                         EXTRACT(MONTH FROM staging.date_of_birth)::INTEGER,
                         EXTRACT(DAY FROM staging.date_of_birth)::INTEGER
@@ -90,10 +92,10 @@ calculated AS (
         END AS expected_age,
         CASE
             WHEN staging.last_flight_date IS NULL THEN NULL
-            WHEN DATE '2024-01-15' - staging.last_flight_date > 90 THEN 'Y'
+            WHEN batch.as_of_date - staging.last_flight_date > 90 THEN 'Y'
             ELSE 'N'
         END AS expected_stale_member
-    FROM latest_batch
+    FROM latest_batch AS batch
     JOIN stg_data.stg_member_data AS staging USING (batch_id)
 )
 SELECT
@@ -196,17 +198,43 @@ SELECT
     ) AS flattened_transaction_rows
 FROM latest_batch;
 
--- Join each flattened redemption to the current member profile by Member_Id.
+-- The redemption feed supplies Member_Id, which locates the canonical profile.
+-- The country output is then looked up by (country, Member_Name), its primary key.
 WITH latest_batch AS (
     SELECT batch_id
     FROM raw_data.etl_batch
     ORDER BY load_timestamp DESC, batch_id DESC
     LIMIT 1
+),
+country_members AS (
+    SELECT 'IND' AS country_code, member_name FROM curated_data.table_india
+    UNION ALL
+    SELECT 'AUS', member_name FROM curated_data.table_australia
+    UNION ALL
+    SELECT 'USA', member_name FROM curated_data.table_usa
+    UNION ALL
+    SELECT 'PHIL', member_name FROM curated_data.table_philippines
+    UNION ALL
+    SELECT 'CAN', member_name FROM curated_data.table_canada
+),
+member_profile AS (
+    SELECT
+        member_id,
+        member_name,
+        country,
+        CASE upper(country)
+            WHEN 'IN' THEN 'IND'
+            WHEN 'AU' THEN 'AUS'
+            WHEN 'US' THEN 'USA'
+            ELSE upper(country)
+        END AS country_code
+    FROM curated_data.member_current
 )
 SELECT
     redemption.batch_id,
     redemption.member_id,
-    member.member_name,
+    profile.member_name,
+    profile.country,
     redemption.transaction_id,
     redemption.transaction_date,
     redemption.partner,
@@ -214,13 +242,17 @@ SELECT
     redemption.status,
     redemption.feed_date,
     CASE
-        WHEN member.member_id IS NULL THEN 'PROFILE NOT FOUND'
-        ELSE 'PROFILE MATCHED'
+        WHEN profile.member_id IS NULL THEN 'PROFILE NOT FOUND'
+        WHEN target.member_name IS NULL THEN 'COUNTRY TARGET NOT FOUND'
+        ELSE 'COUNTRY TARGET MATCHED'
     END AS profile_join_result
 FROM stg_data.stg_redemption_data AS redemption
 JOIN latest_batch USING (batch_id)
-LEFT JOIN curated_data.member_current AS member
-    ON member.member_id = redemption.member_id
+LEFT JOIN member_profile AS profile
+    ON profile.member_id = redemption.member_id
+LEFT JOIN country_members AS target
+    ON target.country_code = profile.country_code
+   AND target.member_name = profile.member_name
 ORDER BY redemption.transaction_date, redemption.transaction_id;
 
 -- ============================================================================
@@ -354,7 +386,8 @@ LIMIT 20;
 --   1. Start PostgreSQL and run ddl_scripts.sql (the ETL also applies it).
 --   2. Run the country seed loader; point out that invalid seed rows are listed
 --      in curated_data.seed_rejects while valid rows load.
---   3. Run pipeline.etl with --as-of 2024-01-15 and the sample member/JSON feeds.
+--   3. Run pipeline.etl with the sample member/JSON feeds. By default, Age and
+--      Stale_Member use the local execution date, persisted as etl_batch.as_of_date.
 --   4. Run this SQL file and walk through Q1-Q5, including the redemption join.
 --   5. For a safe upsert demonstration, use a disposable synthetic member feed:
 --      submit the same Member_Name with a later Last_Flight_Date and a changed
@@ -367,6 +400,7 @@ SELECT
     member_file_name,
     redemption_file_name,
     load_timestamp,
+    as_of_date,
     member_rows,
     redemption_rows
 FROM raw_data.etl_batch

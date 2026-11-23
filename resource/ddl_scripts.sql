@@ -7,9 +7,13 @@ CREATE TABLE IF NOT EXISTS raw_data.etl_batch (
     member_file_name     TEXT NOT NULL,
     redemption_file_name TEXT NOT NULL,
     load_timestamp       TIMESTAMPTZ NOT NULL,
+    as_of_date           DATE NOT NULL,
     member_rows          BIGINT NOT NULL,
     redemption_rows      BIGINT NOT NULL
 );
+
+ALTER TABLE raw_data.etl_batch
+    ADD COLUMN IF NOT EXISTS as_of_date DATE;
 
 CREATE TABLE IF NOT EXISTS raw_data.raw_member_data (
     batch_id             UUID NOT NULL,

@@ -45,7 +45,7 @@ available as typed columns; the original transaction object is retained in raw.
 4. Run both synthetic demo feeds and export country tables as CSV:
 
    ```powershell
-   python -m pipeline.etl --as-of 2024-01-15 --export-dir resource\master_data_county_wise
+   python -m pipeline.etl --export-dir resource\master_data_county_wise
    ```
 
 The DDL is applied automatically. A successful invocation commits both feeds and
@@ -54,14 +54,16 @@ error rolls back the batch and is reported to the console. CSV exports are
 optional and are ignored by Git because they are generated from source data.
 
 Use `--member-file` and `--redemption-file` to supply other daily feeds, and
-`--as-of YYYY-MM-DD` to make age/staleness calculations reproducible. Connection
-settings are read from `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, and
-`PG_PASSWORD`; never commit a real `.env` file or credentials.
+`--as-of YYYY-MM-DD` only when you need reproducible backfills. By default,
+`Age` and `Stale_Member` use the local execution date, which is recorded in
+`raw_data.etl_batch.as_of_date`. Connection settings are read from `PG_HOST`,
+`PG_PORT`, `PG_DATABASE`, `PG_USER`, and `PG_PASSWORD`; never commit a real
+`.env` file or credentials.
 
 To run the local assessment files instead of the safe demo data:
 
 ```powershell
-python -m pipeline.etl --member-file resource\source_data\pipe-delimited.txt --redemption-file resource\source_data\redumption_feed.json --as-of 2024-01-15
+python -m pipeline.etl --member-file resource\source_data\pipe-delimited.txt --redemption-file resource\source_data\redumption_feed.json
 ```
 
 ## Seed the shared country examples
@@ -100,16 +102,59 @@ The DDL is in [`resource/ddl_scripts.sql`](resource/ddl_scripts.sql).
   safely quoted `table_<code>` table automatically.
 * `curated_data.seed_rejects`: rows from curated-example seed files that failed
   validation, including the source file, row number, payload, and reason.
-* `raw_data.etl_batch`: batch ID, source names, load time, and committed row counts.
+* `raw_data.etl_batch`: batch ID, source names, load time, the `as_of_date` used
+  for derived columns, and committed row counts.
 
-Example redemption-to-profile join:
+Example redemption-to-country-target join:
 
 ```sql
-SELECT r.transaction_id, r.transaction_date, r.miles_redeemed,
-       r.status, m.member_name, m.country
-FROM stg_data.stg_redemption_data AS r
-JOIN curated_data.member_current AS m USING (member_id);
+WITH country_members AS (
+    SELECT 'IND' AS country_code, member_name FROM curated_data.table_india
+    UNION ALL
+    SELECT 'AUS', member_name FROM curated_data.table_australia
+    UNION ALL
+    SELECT 'USA', member_name FROM curated_data.table_usa
+    UNION ALL
+    SELECT 'PHIL', member_name FROM curated_data.table_philippines
+    UNION ALL
+    SELECT 'CAN', member_name FROM curated_data.table_canada
+),
+member_profile AS (
+    SELECT
+        member_id,
+        member_name,
+        country,
+        CASE upper(country)
+            WHEN 'IN' THEN 'IND'
+            WHEN 'AU' THEN 'AUS'
+            WHEN 'US' THEN 'USA'
+            ELSE upper(country)
+        END AS country_code
+    FROM curated_data.member_current
+)
+SELECT
+    redemption.transaction_id,
+    redemption.transaction_date,
+    redemption.miles_redeemed,
+    redemption.status,
+    profile.member_name,
+    profile.country,
+    CASE
+        WHEN target.member_name IS NULL THEN 'COUNTRY TARGET NOT FOUND'
+        ELSE 'COUNTRY TARGET MATCHED'
+    END AS target_match
+FROM stg_data.stg_redemption_data AS redemption
+LEFT JOIN member_profile AS profile
+    ON profile.member_id = redemption.member_id
+LEFT JOIN country_members AS target
+    ON target.country_code = profile.country_code
+   AND target.member_name = profile.member_name;
 ```
+
+The redemption feed contains `member_id`, so that key first locates the
+canonical profile. The country target lookup then uses `(country, member_name)`,
+matching the target-table primary key and allowing same-name members in
+different countries.
 
 ## Validation and transformation decisions
 
@@ -175,9 +220,9 @@ psql -h localhost -U skypoints -d skypoints -f resource\assessment_showcase.sql
 
 It has read-only evidence and validation queries for deliverables 1–5, a
 synthetic country-move/latest-flight example, and a short live-demo checklist
-for deliverable 6. The Age/Stale_Member audit uses `2024-01-15`; change that
-date in the SQL if the ETL batch used a different `--as-of` value. Zero
-mismatches and `PASS` results are the expected outcomes.
+for deliverable 6. The Age/Stale_Member audit reads the `as_of_date` recorded
+with the latest ETL batch. Zero mismatches and `PASS` results are the expected
+outcomes.
 
 ## License
 

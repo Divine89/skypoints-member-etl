@@ -545,10 +545,10 @@ def run_pipeline(
                     """
                     INSERT INTO raw_data.etl_batch
                         (batch_id, member_file_name, redemption_file_name,
-                         load_timestamp, member_rows, redemption_rows)
-                    VALUES (%s, %s, %s, %s, 0, 0)
+                         load_timestamp, as_of_date, member_rows, redemption_rows)
+                    VALUES (%s, %s, %s, %s, %s, 0, 0)
                     """,
-                    (str(batch_id), member_name, redemption_name, loaded_at),
+                    (str(batch_id), member_name, redemption_name, loaded_at, as_of),
                 )
 
                 for records in _chunks(iter_member_records(member_file), BATCH_SIZE):
@@ -598,6 +598,7 @@ def run_pipeline(
 
     return {
         "batch_id": str(batch_id),
+        "as_of_date": as_of.isoformat(),
         "member_rows": member_count,
         "redemption_rows": redemption_count,
         "loaded_at": loaded_at.isoformat(),
@@ -643,7 +644,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--as-of",
         type=date.fromisoformat,
         default=date.today(),
-        help="Date used for Age and Stale_Member calculations (YYYY-MM-DD)",
+        help=(
+            "Date used for Age and Stale_Member calculations (YYYY-MM-DD); "
+            "defaults to the local execution date"
+        ),
     )
     parser.add_argument(
         "--export-dir",
@@ -669,7 +673,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     finally:
         connection.close()
     print(
-        f"Batch {result['batch_id']} committed: "
+        f"Batch {result['batch_id']} committed as of {result['as_of_date']}: "
         f"{result['member_rows']} members, {result['redemption_rows']} redemptions"
     )
     return 0
